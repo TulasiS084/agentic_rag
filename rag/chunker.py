@@ -1,31 +1,42 @@
 """
 Document Chunking and Statistics Computation.
 Uses LangChain's RecursiveCharacterTextSplitter while maintaining full metadata traceability.
+Automatically enforces 10% chunk overlap: overlap = int(chunk_size * 0.10).
 """
 from __future__ import annotations
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from rag.config import DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
+from rag.config import DEFAULT_CHUNK_SIZE
 
 logger = logging.getLogger(__name__)
+
+
+def compute_chunk_overlap(chunk_size: int) -> int:
+    """Calculate chunk overlap as exactly 10% of chunk size."""
+    return max(1, int(chunk_size * 0.10))
 
 
 def chunk_pages(
     pages: List[Dict[str, Any]],
     chunk_size: int = DEFAULT_CHUNK_SIZE,
-    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    chunk_overlap: Optional[int] = None,
     document_id: str = "",
+    document_name: str = "",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Split extracted document pages into semantic chunks.
+    Preserves page number, document ID, and document name.
+    Enforces automatic 10% overlap: overlap = int(chunk_size * 0.10).
 
     Returns:
         (chunks, stats)
-        where chunks is a list of chunk dicts and stats is a summary dictionary.
     """
+    if chunk_overlap is None:
+        chunk_overlap = compute_chunk_overlap(chunk_size)
+
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -42,6 +53,7 @@ def chunk_pages(
         page_text = page_data.get("text", "")
         page_num = page_data.get("page", 1)
         page_meta = page_data.get("metadata", {})
+        doc_name = document_name or page_meta.get("source", "Document")
 
         if not page_text.strip():
             continue
@@ -58,10 +70,12 @@ def chunk_pages(
             chunk_id = f"{document_id}_c{chunk_idx}"
             chunk_metadata = {
                 **page_meta,
+                "document_id": document_id,
+                "document_name": doc_name,
+                "source": doc_name,
+                "page_number": page_num,
                 "chunk_id": chunk_id,
                 "chunk_index": chunk_idx,
-                "page_number": page_num,
-                "document_id": document_id,
                 "char_length": len(split_text),
             }
 
@@ -71,14 +85,14 @@ def chunk_pages(
                 "chunk_index": chunk_idx,
                 "page_number": page_num,
                 "document_id": document_id,
+                "document_name": doc_name,
                 "metadata": chunk_metadata,
             })
             chunk_idx += 1
 
-    # Ingestion Statistics
     total_chunks = len(chunks)
     avg_chunk_size = round(total_characters / total_chunks, 1) if total_chunks > 0 else 0
-    estimated_tokens = int(total_words * 1.3)  # Standard rule of thumb: ~1.3 tokens per word
+    estimated_tokens = int(total_words * 1.3)
 
     stats = {
         "total_pages": len(pages),
@@ -89,11 +103,12 @@ def chunk_pages(
         "avg_chunk_size": avg_chunk_size,
         "chunk_size": chunk_size,
         "chunk_overlap": chunk_overlap,
+        "overlap_percentage": "10%",
     }
 
     logger.info(
         f"Chunked {len(pages)} pages into {total_chunks} chunks. "
-        f"Avg size: {avg_chunk_size} chars. Est tokens: {estimated_tokens}"
+        f"(size={chunk_size}, overlap={chunk_overlap} [10%])"
     )
 
     return chunks, stats

@@ -1,14 +1,15 @@
 """
-Agentic Router and Orchestrator.
-Analyzes user intent, checks document relevance against score thresholds,
-and dynamically routes questions to RAG, Web Search, or General LLM.
+Agentic Router and Orchestrator with Exact Intent Extraction & Query Expansion.
+Classifies query intents (author, title, date, dataset, method, summary, etc.),
+applies internal query expansion, executes hybrid search with enlarged candidate pools,
+and synchronizes document viewer page references.
 """
 from __future__ import annotations
 import re
 import logging
-from typing import List, Dict, Any, Optional, Generator
+from typing import List, Dict, Any, Optional, Generator, Tuple
 
-from rag import retriever, reranker, generator, web_search
+from rag import retriever, reranker, generator, web_search, vectorstore
 from rag.config import (
     DEFAULT_DENSE_TOP_K,
     DEFAULT_SPARSE_TOP_K,
@@ -18,32 +19,111 @@ from rag.config import (
 
 logger = logging.getLogger(__name__)
 
-# Minimum cross-encoder threshold for document relevance
 RELEVANCE_THRESHOLD = -2.5
 
+# Intent Constants
+INTENT_AUTHOR = "AUTHOR_EXTRACTION"
+INTENT_TITLE = "TITLE_EXTRACTION"
+INTENT_DATE_YEAR = "DATE_YEAR_EXTRACTION"
+INTENT_DATASET = "DATASET_EXTRACTION"
+INTENT_METHOD = "METHOD_EXTRACTION"
+INTENT_NUMERICAL_FACT = "NUMERICAL_FACT"
+INTENT_LIMITATION = "LIMITATION_EXTRACTION"
+INTENT_SUMMARY = "SUMMARY"
+INTENT_DEFINITION = "DEFINITION"
+INTENT_COMPARISON = "COMPARISON"
+INTENT_FOLLOW_UP = "FOLLOW_UP"
+INTENT_WEB_SEARCH = "WEB_SEARCH"
+INTENT_GENERAL = "GENERAL_DOCUMENT_QUERY"
 
-def is_follow_up(query: str) -> bool:
-    """Detect follow-up queries that reference previous turns."""
+
+def classify_intent(query: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
+    """Classify the user question into specific extraction or reasoning intents."""
     q = query.lower().strip()
-    follow_up_phrases = [
-        "explain it", "explain that", "tell me more", "what about that", "elaborate",
-        "more simply", "simpler", "what is its", "what are its", "why is that",
-        "how does that work", "can you explain further", "give an example",
-    ]
-    if any(phrase in q for phrase in follow_up_phrases):
-        return True
+
+    # 1. Author Identification
+    if any(phrase in q for phrase in ["name the authors", "who wrote", "who are the authors", "author name", "authors of", "who is the author", "list authors"]):
+        return INTENT_AUTHOR
+
+    # 2. Title Identification
+    if any(phrase in q for phrase in ["what is the title", "title of", "name the paper", "paper title", "what is this paper called"]):
+        return INTENT_TITLE
+
+    # 3. Publication Year / Date
+    if any(phrase in q for phrase in ["publication year", "published", "what year", "when was this", "publication date", "year of publication"]):
+        return INTENT_DATE_YEAR
+
+    # 4. Datasets
+    if any(phrase in q for phrase in ["dataset", "datasets", "benchmark", "what data was used", "which dataset", "corpus"]):
+        return INTENT_DATASET
+
+    # 5. Methods / Algorithms
+    if any(phrase in q for phrase in ["method", "methods", "methodology", "algorithm", "model was used", "architecture", "technique", "techniques"]):
+        return INTENT_METHOD
+
+    # 6. Limitations / Challenges
+    if any(phrase in q for phrase in ["limitation", "limitations", "weakness", "drawback", "challenges"]):
+        return INTENT_LIMITATION
+
+    # 7. Numerical / Metric facts
+    if any(phrase in q for phrase in ["accuracy", "precision", "recall", "f1 score", "what percent", "percentage", "how much", "metric"]):
+        return INTENT_NUMERICAL_FACT
+
+    # 8. Follow-Up
+    follow_up_triggers = ["explain that", "explain it", "tell me more", "more simply", "simpler", "what is its", "what are its", "why is that", "elaborate"]
+    if any(trig in q for trig in follow_up_triggers):
+        return INTENT_FOLLOW_UP
     words = q.split()
-    if len(words) <= 5 and any(pronoun in words for pronoun in ["it", "its", "that", "this", "them", "these"]):
-        return True
-    return False
+    if len(words) <= 5 and any(p in words for p in ["it", "its", "that", "this", "them"]):
+        if conversation_history and len(conversation_history) > 0:
+            return INTENT_FOLLOW_UP
+
+    # 9. Summary
+    if any(phrase in q for phrase in ["summarize", "summary", "overview", "what is this pdf about", "what is this pdf all about", "briefly describe"]):
+        return INTENT_SUMMARY
+
+    # 10. Comparison
+    if any(phrase in q for phrase in ["compare", "difference between", "versus", "vs", "similarities"]):
+        return INTENT_COMPARISON
+
+    # 11. Definition
+    if q.startswith("what is") or q.startswith("define") or q.startswith("explain"):
+        return INTENT_DEFINITION
+
+    # 12. Time-Sensitive / Web Queries
+    if web_search.is_live_or_web_query(q):
+        return INTENT_WEB_SEARCH
+
+    return INTENT_GENERAL
+
+
+def expand_query_for_intent(query: str, intent: str) -> str:
+    """
+    Lightweight internal query expansion to prioritize relevant pages/chunks.
+    Internal only — never exposed to the user.
+    """
+    if intent == INTENT_AUTHOR:
+        return f"{query} authors author written by researchers affiliations contributors"
+    elif intent == INTENT_DATE_YEAR:
+        return f"{query} publication year date published IEEE copyright 2024 2025 2026"
+    elif intent == INTENT_DATASET:
+        return f"{query} dataset datasets benchmark data corpus WESAD used evaluation"
+    elif intent == INTENT_METHOD:
+        return f"{query} method methodology architecture proposed model algorithm technique Tabular Transformer"
+    elif intent == INTENT_TITLE:
+        return f"{query} title paper heading survey overview"
+    elif intent == INTENT_LIMITATION:
+        return f"{query} limitations challenges drawbacks future work"
+    elif intent == INTENT_NUMERICAL_FACT:
+        return f"{query} accuracy percentage performance score results"
+    return query
 
 
 def resolve_follow_up(query: str, conversation_history: Optional[List[Dict[str, str]]]) -> str:
-    """Enrich follow-up query with subject context from previous conversation turns."""
+    """Enrich follow-up query with previous context."""
     if not conversation_history:
         return query
 
-    # Locate the last user query
     last_user_turn = ""
     for msg in reversed(conversation_history):
         if msg.get("role") == "user":
@@ -54,11 +134,9 @@ def resolve_follow_up(query: str, conversation_history: Optional[List[Dict[str, 
         return query
 
     q_lower = query.lower()
-    # Check for specific simplification request
     if "more simply" in q_lower or "simpler" in q_lower or "simply" in q_lower:
         return f"Explain {last_user_turn} in very simple, beginner-friendly terms with examples."
 
-    # Extract nouns/keywords from previous turn to resolve "its / it / that"
     cleaned_last = re.sub(r"[^\w\s]", "", last_user_turn)
     keywords = [w for w in cleaned_last.split() if len(w) > 3 and w.lower() not in ["what", "explain", "about", "tell", "this", "that"]]
     subject = " ".join(keywords) if keywords else last_user_turn
@@ -67,9 +145,8 @@ def resolve_follow_up(query: str, conversation_history: Optional[List[Dict[str, 
 
 
 def is_document_specific_query(query: str) -> bool:
-    """Detect queries explicitly referring to an uploaded document."""
     q_lower = query.lower()
-    return bool(re.search(r"\b(pdf|document|file|handbook|chapter|section|page|uploaded)\b", q_lower))
+    return bool(re.search(r"\b(pdf|document|file|paper|handbook|chapter|section|page|uploaded|author|authors|title|published|dataset|methods)\b", q_lower))
 
 
 def run_agentic_rag(
@@ -88,41 +165,37 @@ def run_agentic_rag(
     openai_config: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
-    Intelligent routing and execution:
-    1. Check for live/real-time web queries -> Web Search.
-    2. If documents are loaded -> Hybrid Retrieval + CrossEncoder Rerank.
-    3. Evaluate relevance threshold:
-       - If relevant -> RAG Answer (+ View Sources).
-       - If not relevant -> Fallback to Web Search or General LLM.
-    4. If no documents loaded -> Web Search for live info, or General LLM.
+    Agentic RAG pipeline:
+    1. Intent classification & lightweight query expansion.
+    2. Document Gating & Hybrid Retrieval with enlarged candidate pools (Top 20).
+    3. Cross-Encoder Reranking (Top 6).
+    4. Exact information extraction & strict grounding.
+    5. Primary source page tracking for synchronized PDF viewer.
     """
     has_documents = len(document_ids) > 0
-    resolved_query = resolve_follow_up(query, conversation_history) if is_follow_up(query) else query
+    intent = classify_intent(query, conversation_history)
+    resolved_query = resolve_follow_up(query, conversation_history) if intent == INTENT_FOLLOW_UP else query
 
-    logger.info(f"Agent analyzing: '{query}' -> Resolved: '{resolved_query}' | Docs available: {has_documents}")
+    logger.info(f"Agent classified intent: '{intent}' for query: '{query}'")
 
-    # -------------------------------------------------------------
-    # CASE 1: Live / Real-Time Time-Sensitive Query
-    # (e.g. stock market today, AI news today, who won today's match)
-    # -------------------------------------------------------------
-    if web_search.is_live_or_web_query(resolved_query) and not is_document_specific_query(resolved_query):
-        logger.info("Routing to Web Search: query detected as time-sensitive/current.")
+    # 1. Live / Time-Sensitive Queries -> Web Search
+    if intent == INTENT_WEB_SEARCH and not is_document_specific_query(query):
+        logger.info("Routing to Web Search: time-sensitive / current query.")
         web_results = web_search.search_web(resolved_query, max_results=4)
         return {
             "route": "web",
-            "intent": "WEB_SEARCH",
+            "intent": intent,
             "stream_generator": generator.generate_web_response(resolved_query, web_results),
             "retrieved_sources": [],
             "web_sources": web_results,
-            "stats": {"route": "web", "web_results_count": len(web_results)},
+            "primary_page": 1,
+            "primary_doc": "",
+            "stats": {"route": "web", "count": len(web_results)},
         }
 
-    # -------------------------------------------------------------
-    # CASE 2: No Documents Uploaded
-    # -------------------------------------------------------------
+    # 2. No Documents Uploaded
     if not has_documents:
-        # If user explicitly asked for document content
-        if is_document_specific_query(resolved_query):
+        if is_document_specific_query(query):
             def no_doc_gen():
                 yield "📁 No document is currently uploaded. Please upload your PDF, DOCX, or text file in the sidebar to ask questions about it! 📚"
 
@@ -132,11 +205,11 @@ def run_agentic_rag(
                 "stream_generator": no_doc_gen(),
                 "retrieved_sources": [],
                 "web_sources": [],
+                "primary_page": 1,
+                "primary_doc": "",
                 "stats": {"route": "direct"},
             }
 
-        # Check if general knowledge or general web search
-        logger.info("No documents uploaded: attempting web search / general answer.")
         web_results = web_search.search_web(resolved_query, max_results=3)
         if web_results:
             return {
@@ -145,6 +218,8 @@ def run_agentic_rag(
                 "stream_generator": generator.generate_web_response(resolved_query, web_results),
                 "retrieved_sources": [],
                 "web_sources": web_results,
+                "primary_page": 1,
+                "primary_doc": "",
                 "stats": {"route": "web", "count": len(web_results)},
             }
         else:
@@ -154,14 +229,16 @@ def run_agentic_rag(
                 "stream_generator": generator.generate_general_knowledge(resolved_query),
                 "retrieved_sources": [],
                 "web_sources": [],
+                "primary_page": 1,
+                "primary_doc": "",
                 "stats": {"route": "direct"},
             }
 
-    # -------------------------------------------------------------
-    # CASE 3: Documents Are Uploaded -> Hybrid Retrieval & Relevance Check
-    # -------------------------------------------------------------
+    # 3. Documents Are Uploaded -> Hybrid Retrieval + Expansion
+    search_query = expand_query_for_intent(resolved_query, intent)
+
     hybrid_out = retriever.hybrid_search(
-        query=resolved_query,
+        query=search_query,
         document_ids=document_ids,
         dense_top_k=dense_top_k,
         sparse_top_k=sparse_top_k,
@@ -169,45 +246,90 @@ def run_agentic_rag(
     )
     candidates = hybrid_out["results"]
 
+    # For metadata & extraction intents (author, title, date, summary), always guarantee
+    # that Page 1 chunks are included in candidate evaluation.
+    if intent in [INTENT_AUTHOR, INTENT_TITLE, INTENT_DATE_YEAR, INTENT_SUMMARY]:
+        seen_ids = {c["chunk_id"] for c in candidates}
+        for d_id in document_ids:
+            doc_chunks = vectorstore.get_all_chunks(d_id)
+            for c in doc_chunks:
+                if c.get("metadata", {}).get("page_number") == 1 and c.get("chunk_id") not in seen_ids:
+                    item = c.copy()
+                    item["score"] = 0.5
+                    item["retrieval_source"] = "metadata_page1"
+                    candidates.append(item)
+                    seen_ids.add(item["chunk_id"])
+
     ranked_chunks = reranker.rerank(
-        query=resolved_query,
+        query=search_query,
         chunks=candidates,
         top_n=top_n_rerank,
         use_cross_encoder=use_cross_encoder,
     )
 
-    # Determine Relevance
     top_score = ranked_chunks[0].get("rerank_score", -999.0) if ranked_chunks else -999.0
-    logger.info(f"Top rerank score: {top_score} (Threshold: {RELEVANCE_THRESHOLD})")
+    logger.info(f"Top rerank score: {top_score} | Intent: {intent}")
 
-    # Keyword presence check for query terms in top chunks
     query_words = set(re.findall(r"\w+", resolved_query.lower())) - {"what", "is", "the", "how", "why", "explain", "in", "of", "and", "a", "an"}
-    top_texts = " ".join([c.get("text", "").lower() for c in ranked_chunks[:3]])
+    top_texts = " ".join([c.get("text", "").lower() for c in ranked_chunks[:4]])
     has_keyword_match = any(qw in top_texts for qw in query_words)
 
-    is_relevant = (top_score >= RELEVANCE_THRESHOLD) or has_keyword_match or is_document_specific_query(resolved_query)
+    is_extraction_intent = intent in [
+        INTENT_AUTHOR, INTENT_TITLE, INTENT_DATE_YEAR, INTENT_DATASET,
+        INTENT_METHOD, INTENT_LIMITATION, INTENT_SUMMARY, INTENT_NUMERICAL_FACT
+    ]
+    is_relevant = is_extraction_intent or (top_score >= RELEVANCE_THRESHOLD) or has_keyword_match or is_document_specific_query(resolved_query)
 
-    # -------------------------------------------------------------
-    # Sub-case 3A: Content IS Relevant to Uploaded Documents -> RAG
-    # -------------------------------------------------------------
+    # 3A. Context IS Relevant -> RAG with Exact Fact Extraction
     if is_relevant and ranked_chunks:
-        context_chunks = ranked_chunks[:llm_top_k]
-
-        # Package sources for optional "🔎 View Sources" expander
+        # Package sources with page numbers and scores
         sources = []
+        primary_source_page = 1
+        primary_source_doc = ""
         for c in ranked_chunks:
             meta = c.get("metadata", {})
             sources.append({
                 "rank": c.get("rank", 1),
                 "score": c.get("rerank_score", c.get("score", 0.0)),
-                "source": meta.get("source", "Document"),
+                "source": meta.get("source", meta.get("document_name", "Document")),
                 "document_id": meta.get("document_id", ""),
-                "page": meta.get("page_number", "N/A"),
+                "page": meta.get("page_number", 1),
                 "chunk_id": c.get("chunk_id", ""),
                 "text": c.get("text", ""),
             })
+            if not primary_source_doc and meta.get("page_number") is not None:
+                primary_source_page = int(meta.get("page_number"))
+                primary_source_doc = meta.get("source", meta.get("document_name", ""))
 
-        # Generate natural answer
+        context_chunks = list(ranked_chunks[:llm_top_k])
+
+        # For author and title intents, ensure chunk 0 (title/author block) is included in context
+        if intent in [INTENT_AUTHOR, INTENT_TITLE]:
+            for d_id in document_ids:
+                doc_chunks = vectorstore.get_all_chunks(d_id)
+                for c in doc_chunks:
+                    cid = str(c.get("chunk_id", ""))
+                    idx = c.get("metadata", {}).get("chunk_index", c.get("chunk_index"))
+                    if idx == 0 or cid.endswith("_c0"):
+                        if not any(str(x.get("chunk_id", "")) == cid for x in context_chunks):
+                            c["page_number"] = 1
+                            c["metadata"]["page_number"] = 1
+                            context_chunks.insert(0, c)
+                        if not any(str(x.get("chunk_id", "")) == cid for x in sources):
+                            sources.insert(0, {
+                                "rank": 1,
+                                "score": 1.0,
+                                "source": c.get("metadata", {}).get("source", "Document"),
+                                "document_id": d_id,
+                                "page": 1,
+                                "chunk_id": cid,
+                                "text": c.get("text", ""),
+                            })
+                        primary_source_page = 1
+                        primary_source_doc = c.get("metadata", {}).get("source", "Document")
+                        break
+
+        # Answer generation with exact intent extraction
         if provider == "watsonx":
             stream = generator.generate_watsonx(
                 query=resolved_query,
@@ -237,30 +359,31 @@ def run_agentic_rag(
                 model_name=model_name,
                 temperature=temperature,
             )
-        else:  # Natural Extractive fallback
+        else:  # Natural Extractive fallback with exact fact extraction
             stream = generator.generate_natural_extractive(
                 query=resolved_query,
                 context_chunks=context_chunks,
+                intent=intent,
             )
 
         return {
             "route": "rag",
-            "intent": "DOCUMENT_RAG",
+            "intent": intent,
             "stream_generator": stream,
             "retrieved_sources": sources,
             "web_sources": [],
+            "primary_page": primary_source_page,
+            "primary_doc": primary_source_doc,
             "stats": {"route": "rag", "top_score": top_score, "chunks_used": len(context_chunks)},
         }
 
-    # -------------------------------------------------------------
-    # Sub-case 3B: Content NOT in Documents -> Route to Web Search
-    # -------------------------------------------------------------
-    logger.info(f"Query '{query}' not found in documents (score {top_score}). Routing to Web Search.")
+    # 3B. Not Found in Document -> Web Search Fallback
+    logger.info(f"Query '{query}' not in document. Routing to Web Search.")
     web_results = web_search.search_web(resolved_query, max_results=3)
 
     if web_results:
         def prefixed_web_gen():
-            yield "ℹ️ *This topic was not found in your uploaded documents. Here is what I found on the web:*\n\n"
+            yield "ℹ️ *This information was not found in the uploaded document. Here is what I found from web search:*\n\n"
             yield from generator.generate_web_response(resolved_query, web_results)
 
         return {
@@ -269,12 +392,13 @@ def run_agentic_rag(
             "stream_generator": prefixed_web_gen(),
             "retrieved_sources": [],
             "web_sources": web_results,
+            "primary_page": 1,
+            "primary_doc": "",
             "stats": {"route": "web_fallback", "top_doc_score": top_score},
         }
 
-    # Neither document nor web search has sufficient info
     def not_found_gen():
-        yield "I couldn't find information regarding that in your uploaded documents or from web sources. 📚🌐"
+        yield "I couldn't find that information in the uploaded document or from external sources. 📄"
 
     return {
         "route": "direct",
@@ -282,5 +406,7 @@ def run_agentic_rag(
         "stream_generator": not_found_gen(),
         "retrieved_sources": [],
         "web_sources": [],
+        "primary_page": 1,
+        "primary_doc": "",
         "stats": {"route": "not_found"},
     }

@@ -23,19 +23,19 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DB_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Chunking Hyperparameters
+# Chunking Hyperparameters (Automatic 10% overlap formula)
 DEFAULT_CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
-DEFAULT_CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
+DEFAULT_CHUNK_OVERLAP = int(DEFAULT_CHUNK_SIZE * 0.10)
 
 # Embeddings
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
 
-# Retrieval & Fusion
-DEFAULT_DENSE_TOP_K = int(os.getenv("DENSE_TOP_K", "10"))
-DEFAULT_SPARSE_TOP_K = int(os.getenv("SPARSE_TOP_K", "10"))
-DEFAULT_TOP_N_RERANK = int(os.getenv("TOP_N_RERANK", "5"))
-DEFAULT_LLM_TOP_K = int(os.getenv("LLM_TOP_K", "4"))
+# Expanded Candidate Pool Retrieval & Reranking Defaults
+DEFAULT_DENSE_TOP_K = int(os.getenv("DENSE_TOP_K", "20"))
+DEFAULT_SPARSE_TOP_K = int(os.getenv("SPARSE_TOP_K", "20"))
+DEFAULT_TOP_N_RERANK = int(os.getenv("TOP_N_RERANK", "6"))
+DEFAULT_LLM_TOP_K = int(os.getenv("LLM_TOP_K", "5"))
 RRF_K = int(os.getenv("RRF_K", "60"))
 
 # Reranker Model
