@@ -1,0 +1,22 @@
+Artificial Intelligence and Machine Learning: A Comprehensive Guide
+
+Chapter 1: Introduction to Artificial Intelligence
+Artificial Intelligence (AI) is a multidisciplinary field of computer science dedicated to developing computer systems capable of performing tasks that ordinarily require human intelligence. Such cognitive abilities encompass visual pattern perception, speech interpretation, automated decision-making, and natural language translation.
+
+Chapter 2: Machine Learning Foundations
+Machine Learning (ML) is the computational backbone of modern AI. ML algorithms discover statistical relationships and patterns directly from training data rather than relying on deterministic, hard-coded rule sets.
+Key paradigms include:
+- Supervised Learning: Learning mappings from input features to known target labels (e.g. classification, regression).
+- Unsupervised Learning: Extracting inherent cluster structures or low-dimensional representations from unlabelled data.
+- Reinforcement Learning: Optimizing agent policies through trial-and-error environmental interactions driven by scalar reward signals.
+
+Chapter 3: Deep Neural Networks and Architectures
+Deep Learning models hierarchically compose representation layers using artificial neural network topologies:
+- Convolutional Neural Networks (CNNs): Excel at spatial feature hierarchies, dominating computer vision, medical imaging, and object recognition.
+- Recurrent Neural Networks (RNNs) and LSTMs: Process sequential dependencies across temporal sequences.
+- Transformer Architectures: Leverage self-attention mechanisms to parallelize contextual token representations, serving as the foundation of modern Large Language Models (LLMs) such as GPT, Claude, and Llama.
+- Generative Adversarial Networks (GANs): Pair generator and discriminator sub-networks in a minimax optimization game to synthesize hyper-realistic synthetic media.
+
+Chapter 4: Agentic RAG Systems
+Retrieval-Augmented Generation (RAG) augments generative models with external factual databases, dramatically reducing hallucinations.
+Agentic RAG elevates this paradigm by integrating autonomous query routing, hybrid dense-sparse retrieval (combining dense embeddings with BM25), reciprocal rank fusion (RRF), and cross-encoder reranking to ensure that retrieved context is maximally relevant, precise, and verifiable with exact source citations.
